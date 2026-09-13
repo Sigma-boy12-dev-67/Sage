@@ -615,3 +615,96 @@ a:hover {
     max-width: 85%;
   }
 }
+
+/* ---------- Account / Authentication ---------- */
+
+.user-area {
+  margin-top: 7px;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  margin-bottom: 5px;
+}
+
+.account-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+  flex-shrink: 0;
+}
+
+.account-email {
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 210px;
+}
+
+.auth-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.auth-button {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 6px 9px;
+  font-size: 11.5px;
+  font-weight: 500;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.auth-button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.auth-button-primary:hover {
+  background: #4b81f0;
+  border-color: #4b81f0;
+}
+
+.auth-button-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.auth-button-secondary:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.auth-link-button {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.auth-link-button:hover {
+  color: var(--text-primary);
+}
+
+.github-link {
+  margin-top: 3px !important;
+}
+
+.github-link a {
+  font-size: 11.5px;
+}
