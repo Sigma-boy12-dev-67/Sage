@@ -1,0 +1,15 @@
+{
+  "name": "groq-chat",
+  "version": "1.0.0",
+  "description": "A ChatGPT-style chatbot UI backed by the Groq API, deployable on Netlify.",
+  "private": true,
+  "scripts": {
+    "dev": "netlify dev"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
