@@ -1,318 +1,315 @@
 // netlify/functions/chat.js
-//
-// Sage backend:
-// - Sends chat messages to Groq
-// - Saves/loads/deletes logged-in users' conversations in Supabase
-// - Keeps Groq and Supabase secret keys on the server
 
-const GROQ_ENDPOINT =
-  'https://api.groq.com/openai/v1/chat/completions';
-
+const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = 'openai/gpt-oss-120b';
 
-const SUPABASE_TABLE = 'chats';
+const jsonHeaders = {
+  'Content-Type': 'application/json',
+};
 
-function json(statusCode, body) {
+function getUserId(context) {
+  return context?.clientContext?.user?.sub || null;
+}
+
+function supabaseHeaders() {
   return {
-    statusCode,
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+    'Content-Type': 'application/json',
+    apikey: process.env.SUPABASE_SECRET_KEY,
+    Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
   };
-}
-
-// Get the logged-in Netlify Identity user.
-// Netlify provides this through the function context when the
-// frontend sends the user's Identity JWT.
-function getNetlifyUser(context) {
-  return context?.clientContext?.user || null;
-}
-
-function getSupabaseConfig() {
-  const url = process.env.SUPABASE_URL;
-  const secretKey = process.env.SUPABASE_SECRET_KEY;
-
-  if (!url || !secretKey) {
-    return null;
-  }
-
-  return {
-    url: url.replace(/\/$/, ''),
-    secretKey,
-  };
-}
-
-async function supabaseRequest(path, options = {}) {
-  const config = getSupabaseConfig();
-
-  if (!config) {
-    throw new Error(
-      'SUPABASE_URL or SUPABASE_SECRET_KEY is not configured.'
-    );
-  }
-
-  const response = await fetch(
-    `${config.url}/rest/v1/${SUPABASE_TABLE}${path}`,
-    {
-      ...options,
-      headers: {
-        apikey: config.secretKey,
-        Authorization: `Bearer ${config.secretKey}`,
-        'Content-Type': 'application/json',
-        Prefer: options.prefer || 'return=representation',
-        ...(options.headers || {}),
-      },
-    }
-  );
-
-  const text = await response.text();
-
-  let data = null;
-
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-
-  if (!response.ok) {
-    console.error(
-      'Supabase error:',
-      response.status,
-      data
-    );
-
-    throw new Error(
-      typeof data === 'object' && data?.message
-        ? data.message
-        : 'Supabase request failed.'
-    );
-  }
-
-  return data;
-}
-
-function sanitizeMessages(messages) {
-  if (!Array.isArray(messages)) {
-    return [];
-  }
-
-  return messages
-    .filter(
-      (m) =>
-        m &&
-        typeof m.content === 'string' &&
-        (
-          m.role === 'user' ||
-          m.role === 'assistant' ||
-          m.role === 'system'
-        )
-    )
-    .map((m) => ({
-      role: m.role,
-      content: m.content,
-      ...(m.isError ? { isError: true } : {}),
-    }));
 }
 
 async function saveConversation(userId, conversation) {
-  if (!conversation || !conversation.id) {
-    throw new Error('Invalid conversation.');
+  const url = process.env.SUPABASE_URL;
+
+  if (!url || !process.env.SUPABASE_SECRET_KEY) {
+    throw new Error('Supabase environment variables are missing.');
   }
 
-  const messages = sanitizeMessages(
-    conversation.messages
-  );
+  const endpoint = `${url}/rest/v1/chats`;
 
-  const title =
-    typeof conversation.title === 'string' &&
-    conversation.title.trim()
-      ? conversation.title.trim()
-      : 'New chat';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      ...supabaseHeaders(),
+      Prefer: 'resolution=merge-duplicates',
+    },
+    body: JSON.stringify({
+      user_id: userId,
+      chat_id: conversation.id,
+      title: conversation.title,
+      messages: conversation.messages,
+      created_at: new Date(conversation.createdAt).toISOString(),
+      updated_at: new Date(conversation.updatedAt).toISOString(),
+    }),
+  });
 
-  const createdAt =
-    Number.isFinite(conversation.createdAt)
-      ? new Date(conversation.createdAt).toISOString()
-      : new Date().toISOString();
-
-  const updatedAt = new Date().toISOString();
-
-  const rows = await supabaseRequest(
-    `?user_id=eq.${encodeURIComponent(userId)}&id=eq.${encodeURIComponent(conversation.id)}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify({
-        title,
-        messages,
-        updated_at: updatedAt,
-      }),
-    }
-  );
-
-  // If the conversation didn't already exist, create it.
-  if (!Array.isArray(rows) || rows.length === 0) {
-    const inserted = await supabaseRequest('', {
-      method: 'POST',
-      body: JSON.stringify({
-        id: conversation.id,
-        user_id: userId,
-        title,
-        messages,
-        created_at: createdAt,
-        updated_at: updatedAt,
-      }),
-    });
-
-    return Array.isArray(inserted)
-      ? inserted[0]
-      : inserted;
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error('Supabase save error:', response.status, detail);
+    throw new Error('Could not save conversation.');
   }
-
-  return rows[0];
 }
 
 async function loadConversations(userId) {
-  const data = await supabaseRequest(
-    `?user_id=eq.${encodeURIComponent(userId)}&order=updated_at.desc`,
-    {
-      method: 'GET',
-    }
-  );
+  const url = process.env.SUPABASE_URL;
 
-  return Array.isArray(data) ? data : [];
+  const query =
+    `${url}/rest/v1/chats` +
+    `?user_id=eq.${encodeURIComponent(userId)}` +
+    `&select=id,chat_id,title,messages,created_at,updated_at` +
+    `&order=updated_at.desc`;
+
+  const response = await fetch(query, {
+    method: 'GET',
+    headers: supabaseHeaders(),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error('Supabase load error:', response.status, detail);
+    throw new Error('Could not load conversations.');
+  }
+
+  const rows = await response.json();
+
+  return rows.map((row) => ({
+    id: row.chat_id,
+    title: row.title,
+    messages: row.messages || [],
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+  }));
 }
 
-async function deleteConversation(userId, conversationId) {
-  await supabaseRequest(
-    `?user_id=eq.${encodeURIComponent(userId)}&id=eq.${encodeURIComponent(conversationId)}`,
-    {
-      method: 'DELETE',
-      prefer: 'return=minimal',
-    }
-  );
+async function deleteConversation(userId, chatId) {
+  const url = process.env.SUPABASE_URL;
+
+  const query =
+    `${url}/rest/v1/chats` +
+    `?user_id=eq.${encodeURIComponent(userId)}` +
+    `&chat_id=eq.${encodeURIComponent(chatId)}`;
+
+  const response = await fetch(query, {
+    method: 'DELETE',
+    headers: supabaseHeaders(),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    console.error('Supabase delete error:', response.status, detail);
+    throw new Error('Could not delete conversation.');
+  }
 }
 
 exports.handler = async (event, context) => {
+  const headers = jsonHeaders;
+
   if (event.httpMethod !== 'POST') {
-    return json(405, {
-      error: 'Method not allowed.',
-    });
+    return {
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: 'Method not allowed.' }),
+    };
+  }
+
+  const apiKey = process.env.GROQ_API_KEY;
+
+  if (!apiKey) {
+    console.error('GROQ_API_KEY is not set.');
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        error: 'Server is missing its API key configuration.',
+      }),
+    };
   }
 
   let payload;
 
   try {
     payload = JSON.parse(event.body || '{}');
-  } catch {
-    return json(400, {
-      error: 'Invalid request body.',
-    });
+  } catch (e) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({
+        error: 'Invalid request body.',
+      }),
+    };
   }
 
   const action = payload.action || 'chat';
+  const userId = getUserId(context);
 
-  // ---------- Authenticated actions ----------
-
-  if (
-    action === 'load' ||
-    action === 'save' ||
-    action === 'delete'
-  ) {
-    const user = getNetlifyUser(context);
-
-    if (!user) {
-      return json(401, {
-        error: 'You must be logged in to use saved chats.',
-      });
-    }
-
-    const userId = user.sub || user.id;
-
+  // -------------------------
+  // LOAD CLOUD CONVERSATIONS
+  // -------------------------
+  if (action === 'load') {
     if (!userId) {
-      return json(401, {
-        error: 'Could not identify the logged-in user.',
-      });
+      return {
+        statusCode: 401,
+        headers,
+        body: JSON.stringify({
+          error: 'You must be logged in.',
+        }),
+      };
     }
 
     try {
-      if (action === 'load') {
-        const conversations =
-          await loadConversations(userId);
+      const conversations = await loadConversations(userId);
 
-        return json(200, {
-          conversations,
-        });
-      }
-
-      if (action === 'save') {
-        const conversation =
-          await saveConversation(
-            userId,
-            payload.conversation
-          );
-
-        return json(200, {
-          conversation,
-        });
-      }
-
-      if (action === 'delete') {
-        const conversationId =
-          payload.conversationId;
-
-        if (!conversationId) {
-          return json(400, {
-            error: 'A conversation ID is required.',
-          });
-        }
-
-        await deleteConversation(
-          userId,
-          conversationId
-        );
-
-        return json(200, {
-          success: true,
-        });
-      }
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({ conversations }),
+      };
     } catch (err) {
-      console.error(
-        'Supabase operation failed:',
-        err
-      );
+      console.error(err);
 
-      return json(500, {
-        error:
-          'Could not access saved chat history. Please try again.',
-      });
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({
+          error: 'Could not load your conversations.',
+        }),
+      };
     }
   }
 
-  // ---------- Groq chat ----------
+  // -------------------------
+  // SAVE CLOUD CONVERSATION
+  // -------------------------
+  if (action === 'save') {
+    if (!userId) {
+      return {
+        statusCode: 401,
+        headers,
+        body: JSON.stringify({
+          error: 'You must be logged in.',
+        }),
+      };
+    }
 
-  const apiKey =
-    process.env.GROQ_API_KEY;
+    const conversation = payload.conversation;
 
-  if (!apiKey) {
-    console.error(
-      'GROQ_API_KEY is not set in environment variables.'
-    );
+    if (!conversation || !conversation.id) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({
+          error: 'A valid conversation is required.',
+        }),
+      };
+    }
 
-    return json(500, {
-      error:
-        'Server is missing its API key configuration.',
-    });
+    try {
+      await saveConversation(userId, conversation);
+
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          success: true,
+        }),
+      };
+    } catch (err) {
+      console.error(err);
+
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({
+          error: 'Could not save your conversation.',
+        }),
+      };
+    }
   }
 
-  const messages =
-    sanitizeMessages(payload.messages);
+  // -------------------------
+  // DELETE CLOUD CONVERSATION
+  // -------------------------
+  if (action === 'delete') {
+    if (!userId) {
+      return {
+        statusCode: 401,
+        headers,
+        body: JSON.stringify({
+          error: 'You must be logged in.',
+        }),
+      };
+    }
 
-  if (messages.length === 0) {
-    return json(400, {
-      error:
-        'A non-empty "messages" array is required.',
-    });
+    if (!payload.chatId) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({
+          error: 'A chat ID is required.',
+        }),
+      };
+    }
+
+    try {
+      await deleteConversation(userId, payload.chatId);
+
+      return {
+        statusCode: 200,
+        headers,
+        body: JSON.stringify({
+          success: true,
+        }),
+      };
+    } catch (err) {
+      console.error(err);
+
+      return {
+        statusCode: 500,
+        headers,
+        body: JSON.stringify({
+          error: 'Could not delete the conversation.',
+        }),
+      };
+    }
+  }
+
+  // -------------------------
+  // NORMAL AI CHAT
+  // -------------------------
+
+  const { messages } = payload;
+
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({
+        error: 'A non-empty "messages" array is required.',
+      }),
+    };
+  }
+
+  const sanitizedMessages = messages
+    .filter(
+      (m) =>
+        m &&
+        typeof m.content === 'string' &&
+        ['user', 'assistant', 'system'].includes(m.role)
+    )
+    .map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+  if (sanitizedMessages.length === 0) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({
+        error: 'No valid messages were provided.',
+      }),
+    };
   }
 
   const SYSTEM_PROMPT = {
@@ -322,48 +319,42 @@ exports.handler = async (event, context) => {
   };
 
   const outgoingMessages =
-    messages[0]?.role === 'system'
-      ? messages
-      : [SYSTEM_PROMPT, ...messages];
+    sanitizedMessages[0]?.role === 'system'
+      ? sanitizedMessages
+      : [SYSTEM_PROMPT, ...sanitizedMessages];
 
   try {
-    const response = await fetch(
-      GROQ_ENDPOINT,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type':
-            'application/json',
-          Authorization:
-            `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          messages: outgoingMessages,
-          temperature: 0.7,
-        }),
-      }
-    );
+    const response = await fetch(GROQ_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: outgoingMessages,
+        temperature: 0.7,
+      }),
+    });
 
     if (response.status === 429) {
-      return json(429, {
-        error:
-          "We're getting a lot of requests right now. Please wait a moment and try again.",
-      });
+      return {
+        statusCode: 429,
+        headers,
+        body: JSON.stringify({
+          error:
+            "We're getting a lot of requests right now. Please wait a moment and try again.",
+        }),
+      };
     }
 
     if (!response.ok) {
       let detail = '';
 
       try {
-        const errJson =
-          await response.json();
-
-        detail =
-          errJson?.error?.message || '';
-      } catch {
-        // Ignore parse failure.
-      }
+        const errJson = await response.json();
+        detail = errJson?.error?.message || '';
+      } catch (e) {}
 
       console.error(
         'Groq API error:',
@@ -371,37 +362,46 @@ exports.handler = async (event, context) => {
         detail
       );
 
-      return json(response.status, {
-        error:
-          'The AI service had a problem responding. Please try again in a moment.',
-      });
+      return {
+        statusCode: response.status,
+        headers,
+        body: JSON.stringify({
+          error:
+            'The AI service had a problem responding. Please try again in a moment.',
+        }),
+      };
     }
 
-    const data =
-      await response.json();
-
-    const reply =
-      data?.choices?.[0]?.message?.content;
+    const data = await response.json();
+    const reply = data?.choices?.[0]?.message?.content;
 
     if (!reply) {
-      return json(502, {
-        error:
-          'Received an empty response from the AI service.',
-      });
+      return {
+        statusCode: 502,
+        headers,
+        body: JSON.stringify({
+          error: 'Received an empty response from the AI service.',
+        }),
+      };
     }
 
-    return json(200, {
-      reply,
-    });
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ reply }),
+    };
   } catch (err) {
     console.error(
-      'Unexpected error calling Groq API:',
+      'Unexpected error calling Groq:',
       err
     );
 
-    return json(500, {
-      error:
-        'Unexpected server error. Please try again shortly.',
-    });
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({
+        error: 'Unexpected server error. Please try again shortly.',
+      }),
+    };
   }
 };
