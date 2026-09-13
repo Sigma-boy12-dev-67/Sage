@@ -4,37 +4,78 @@
   const STORAGE_KEY = 'groq-chat-conversations';
   const API_ENDPOINT = '/api/chat';
 
-  /** @type {{id: string, title: string, messages: {role: string, content: string}[], createdAt: number}[]} */
+  /** @type {{id: string, title: string, messages: {role: string, content: string, isError?: boolean}[], createdAt: number, updatedAt?: number}[]} */
   let conversations = [];
+
   let activeId = null;
   let isSending = false;
   let pendingDeleteId = null;
+  let currentUser = null;
 
   // ---------- DOM references ----------
-  const sidebar = document.getElementById('sidebar');
-  const scrim = document.getElementById('scrim');
-  const openSidebarBtn = document.getElementById('openSidebarBtn');
-  const closeSidebarBtn = document.getElementById('closeSidebarBtn');
-  const newChatBtn = document.getElementById('newChatBtn');
-  const chatListEl = document.getElementById('chatList');
-  const chatTitleEl = document.getElementById('chatTitle');
-  const messagesContainer = document.getElementById('messagesContainer');
-  const welcomeScreen = document.getElementById('welcomeScreen');
-  const messagesEl = document.getElementById('messages');
-  const composerInput = document.getElementById('composerInput');
-  const sendBtn = document.getElementById('sendBtn');
-  const modalOverlay = document.getElementById('modalOverlay');
-  const modalMessage = document.getElementById('modalMessage');
-  const modalCancelBtn = document.getElementById('modalCancelBtn');
-  const modalConfirmBtn = document.getElementById('modalConfirmBtn');
-  const userArea = document.getElementById('userArea');
+
+  const sidebar =
+    document.getElementById('sidebar');
+
+  const scrim =
+    document.getElementById('scrim');
+
+  const openSidebarBtn =
+    document.getElementById('openSidebarBtn');
+
+  const closeSidebarBtn =
+    document.getElementById('closeSidebarBtn');
+
+  const newChatBtn =
+    document.getElementById('newChatBtn');
+
+  const chatListEl =
+    document.getElementById('chatList');
+
+  const chatTitleEl =
+    document.getElementById('chatTitle');
+
+  const messagesContainer =
+    document.getElementById('messagesContainer');
+
+  const welcomeScreen =
+    document.getElementById('welcomeScreen');
+
+  const messagesEl =
+    document.getElementById('messages');
+
+  const composerInput =
+    document.getElementById('composerInput');
+
+  const sendBtn =
+    document.getElementById('sendBtn');
+
+  const modalOverlay =
+    document.getElementById('modalOverlay');
+
+  const modalMessage =
+    document.getElementById('modalMessage');
+
+  const modalCancelBtn =
+    document.getElementById('modalCancelBtn');
+
+  const modalConfirmBtn =
+    document.getElementById('modalConfirmBtn');
+
+  const userArea =
+    document.getElementById('userArea');
 
   // ---------- Authentication ----------
+
   function renderUserArea(user) {
     if (!userArea) return;
 
     if (user) {
-      const email = escapeHtml(user.email || 'Logged-in user');
+      const email =
+        escapeHtml(
+          user.email ||
+          'Logged-in user'
+        );
 
       userArea.innerHTML = `
         <div class="account-row">
@@ -53,16 +94,20 @@
         </button>
       `;
 
-      const logoutBtn = document.getElementById('logoutBtn');
+      const logoutBtn =
+        document.getElementById(
+          'logoutBtn'
+        );
 
       if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => {
-          netlifyIdentity.logout();
-        });
+        logoutBtn.addEventListener(
+          'click',
+          () => {
+            netlifyIdentity.logout();
+          }
+        );
       }
-
     } else {
-
       userArea.innerHTML = `
         <div class="auth-actions">
 
@@ -85,56 +130,149 @@
         </div>
       `;
 
-      const signupBtn = document.getElementById('signupBtn');
-      const loginBtn = document.getElementById('loginBtn');
+      const signupBtn =
+        document.getElementById(
+          'signupBtn'
+        );
+
+      const loginBtn =
+        document.getElementById(
+          'loginBtn'
+        );
 
       if (signupBtn) {
-        signupBtn.addEventListener('click', () => {
-          netlifyIdentity.open('signup');
-        });
+        signupBtn.addEventListener(
+          'click',
+          () => {
+            netlifyIdentity.open(
+              'signup'
+            );
+          }
+        );
       }
 
       if (loginBtn) {
-        loginBtn.addEventListener('click', () => {
-          netlifyIdentity.open('login');
-        });
+        loginBtn.addEventListener(
+          'click',
+          () => {
+            netlifyIdentity.open(
+              'login'
+            );
+          }
+        );
       }
     }
   }
 
-  function initializeAuthentication() {
-    if (typeof netlifyIdentity === 'undefined') {
-      console.error('Netlify Identity is not available.');
+  async function initializeAuthentication() {
+    if (
+      typeof netlifyIdentity ===
+      'undefined'
+    ) {
+      console.error(
+        'Netlify Identity is not available.'
+      );
+
       return;
     }
 
-    netlifyIdentity.on('init', (user) => {
-      renderUserArea(user);
-    });
+    netlifyIdentity.on(
+      'init',
+      async (user) => {
+        currentUser = user;
+        renderUserArea(user);
 
-    netlifyIdentity.on('login', (user) => {
-      renderUserArea(user);
-      netlifyIdentity.close();
-    });
+        if (user) {
+          await loadCloudConversations();
+        }
+      }
+    );
 
-    netlifyIdentity.on('logout', () => {
-      renderUserArea(null);
-    });
+    netlifyIdentity.on(
+      'login',
+      async (user) => {
+        currentUser = user;
 
-    netlifyIdentity.on('error', (error) => {
-      console.error('Netlify Identity error:', error);
-    });
+        renderUserArea(user);
+
+        netlifyIdentity.close();
+
+        await loadCloudConversations();
+      }
+    );
+
+    netlifyIdentity.on(
+      'logout',
+      () => {
+        currentUser = null;
+
+        // Keep local chats available,
+        // but don't show them as cloud chats.
+        loadConversations();
+
+        activeId = null;
+
+        renderUserArea(null);
+        renderChatList();
+        renderActiveConversation();
+      }
+    );
+
+    netlifyIdentity.on(
+      'error',
+      (error) => {
+        console.error(
+          'Netlify Identity error:',
+          error
+        );
+      }
+    );
 
     netlifyIdentity.init();
   }
 
+  // ---------- Authentication token ----------
+
+  async function getAuthToken() {
+    if (
+      !currentUser ||
+      typeof currentUser.jwt !==
+        'function'
+    ) {
+      return null;
+    }
+
+    try {
+      return await currentUser.jwt();
+    } catch (error) {
+      console.error(
+        'Could not get authentication token:',
+        error
+      );
+
+      return null;
+    }
+  }
+
   // ---------- Persistence ----------
+
   function loadConversations() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      conversations = raw ? JSON.parse(raw) : [];
+      const raw =
+        localStorage.getItem(
+          STORAGE_KEY
+        );
+
+      conversations =
+        raw
+          ? JSON.parse(raw)
+          : [];
     } catch (e) {
-      console.error('Failed to load conversations', e);
+      console.error(
+        'Failed to load conversations',
+        e
+      );
+
       conversations = [];
     }
   }
@@ -143,122 +281,379 @@
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify(conversations)
+        JSON.stringify(
+          conversations
+        )
       );
     } catch (e) {
-      console.error('Failed to save conversations', e);
+      console.error(
+        'Failed to save conversations',
+        e
+      );
+    }
+  }
+
+  // ---------- Cloud persistence ----------
+
+  async function cloudRequest(
+    action,
+    body = {}
+  ) {
+    const token =
+      await getAuthToken();
+
+    if (!token) {
+      return null;
+    }
+
+    const response =
+      await fetch(
+        API_ENDPOINT,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type':
+              'application/json',
+            Authorization:
+              `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            action,
+            ...body,
+          }),
+        }
+      );
+
+    let data = null;
+
+    try {
+      data =
+        await response.json();
+    } catch {
+      data = null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error ||
+        'Cloud request failed.'
+      );
+    }
+
+    return data;
+  }
+
+  async function loadCloudConversations() {
+    try {
+      const data =
+        await cloudRequest(
+          'load'
+        );
+
+      if (
+        !data ||
+        !Array.isArray(
+          data.conversations
+        )
+      ) {
+        return;
+      }
+
+      conversations =
+        data.conversations.map(
+          (conversation) => ({
+            id: String(
+              conversation.id
+            ),
+
+            title:
+              conversation.title ||
+              'New chat',
+
+            messages:
+              Array.isArray(
+                conversation.messages
+              )
+                ? conversation.messages
+                : [],
+
+            createdAt:
+              conversation.created_at
+                ? new Date(
+                    conversation.created_at
+                  ).getTime()
+                : Date.now(),
+
+            updatedAt:
+              conversation.updated_at
+                ? new Date(
+                    conversation.updated_at
+                  ).getTime()
+                : Date.now(),
+          })
+        );
+
+      activeId = null;
+
+      renderChatList();
+      renderActiveConversation();
+    } catch (error) {
+      console.error(
+        'Could not load cloud conversations:',
+        error
+      );
+    }
+  }
+
+  async function saveConversationToCloud(
+    convo
+  ) {
+    if (!currentUser || !convo) {
+      return;
+    }
+
+    try {
+      await cloudRequest(
+        'save',
+        {
+          conversation: {
+            id: convo.id,
+            title:
+              convo.title ||
+              'New chat',
+            messages:
+              convo.messages,
+            createdAt:
+              convo.createdAt,
+          },
+        }
+      );
+    } catch (error) {
+      console.error(
+        'Could not save conversation:',
+        error
+      );
+    }
+  }
+
+  async function deleteConversationFromCloud(
+    id
+  ) {
+    if (!currentUser) {
+      return;
+    }
+
+    try {
+      await cloudRequest(
+        'delete',
+        {
+          conversationId: id,
+        }
+      );
+    } catch (error) {
+      console.error(
+        'Could not delete cloud conversation:',
+        error
+      );
     }
   }
 
   // ---------- Helpers ----------
+
   function genId() {
     return (
       'c_' +
       Date.now().toString(36) +
       '_' +
-      Math.random().toString(36).slice(2, 8)
+      Math.random()
+        .toString(36)
+        .slice(2, 8)
     );
   }
 
   function getActiveConversation() {
-    return conversations.find((c) => c.id === activeId) || null;
+    return (
+      conversations.find(
+        (c) =>
+          c.id === activeId
+      ) || null
+    );
   }
 
   function escapeHtml(str) {
     return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+      .replace(
+        /&/g,
+        '&amp;'
+      )
+      .replace(
+        /</g,
+        '&lt;'
+      )
+      .replace(
+        />/g,
+        '&gt;'
+      )
+      .replace(
+        /"/g,
+        '&quot;'
+      )
+      .replace(
+        /'/g,
+        '&#39;'
+      );
   }
 
-  // Very small markdown subset:
-  // fenced code blocks, inline code, **bold**
   function renderMarkdown(text) {
-    const escaped = escapeHtml(text);
+    const escaped =
+      escapeHtml(text);
+
     const codeBlocks = [];
 
-    let out = escaped.replace(
-      /```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g,
-      (_, _lang, code) => {
-        const idx = codeBlocks.length;
+    let out =
+      escaped.replace(
+        /```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g,
+        (_, _lang, code) => {
+          const idx =
+            codeBlocks.length;
 
-        codeBlocks.push(
-          `<pre><code>${code.replace(/\n$/, '')}</code></pre>`
-        );
+          codeBlocks.push(
+            `<pre><code>${code.replace(
+              /\n$/,
+              ''
+            )}</code></pre>`
+          );
 
-        return `\u0000CODEBLOCK${idx}\u0000`;
-      }
-    );
+          return `\u0000CODEBLOCK${idx}\u0000`;
+        }
+      );
 
-    out = out.replace(
-      /`([^`\n]+)`/g,
-      '<code>$1</code>'
-    );
+    out =
+      out.replace(
+        /`([^`\n]+)`/g,
+        '<code>$1</code>'
+      );
 
-    out = out.replace(
-      /\*\*([^*]+)\*\*/g,
-      '<strong>$1</strong>'
-    );
+    out =
+      out.replace(
+        /\*\*([^*]+)\*\*/g,
+        '<strong>$1</strong>'
+      );
 
-    out = out.replace(
-      /\u0000CODEBLOCK(\d+)\u0000/g,
-      (_, idx) => codeBlocks[Number(idx)]
-    );
+    out =
+      out.replace(
+        /\u0000CODEBLOCK(\d+)\u0000/g,
+        (_, idx) =>
+          codeBlocks[
+            Number(idx)
+          ]
+      );
 
     return out;
   }
 
   function titleFromMessage(text) {
-    const trimmed = text
-      .trim()
-      .replace(/\s+/g, ' ');
+    const trimmed =
+      text
+        .trim()
+        .replace(
+          /\s+/g,
+          ' '
+        );
 
-    if (trimmed.length <= 40) {
+    if (
+      trimmed.length <= 40
+    ) {
       return trimmed;
     }
 
-    return trimmed.slice(0, 40).trim() + '…';
+    return (
+      trimmed
+        .slice(0, 40)
+        .trim() + '…'
+    );
   }
 
   // ---------- Sidebar ----------
+
   function renderChatList() {
     chatListEl.innerHTML = '';
 
-    if (conversations.length === 0) {
-      const empty = document.createElement('div');
+    if (
+      conversations.length ===
+      0
+    ) {
+      const empty =
+        document.createElement(
+          'div'
+        );
 
-      empty.className = 'chat-list-empty';
-      empty.textContent = 'No conversations yet';
+      empty.className =
+        'chat-list-empty';
 
-      chatListEl.appendChild(empty);
+      empty.textContent =
+        'No conversations yet';
+
+      chatListEl.appendChild(
+        empty
+      );
 
       return;
     }
 
-    const sorted = [...conversations].sort(
-      (a, b) => b.createdAt - a.createdAt
-    );
+    const sorted =
+      [...conversations].sort(
+        (a, b) =>
+          (
+            b.updatedAt ||
+            b.createdAt
+          ) -
+          (
+            a.updatedAt ||
+            a.createdAt
+          )
+      );
 
-    for (const convo of sorted) {
-
-      const item = document.createElement('div');
+    for (
+      const convo of sorted
+    ) {
+      const item =
+        document.createElement(
+          'div'
+        );
 
       item.className =
         'chat-list-item' +
-        (convo.id === activeId ? ' active' : '');
+        (
+          convo.id ===
+          activeId
+            ? ' active'
+            : ''
+        );
 
-      item.dataset.id = convo.id;
+      item.dataset.id =
+        convo.id;
 
-      const title = document.createElement('span');
+      const title =
+        document.createElement(
+          'span'
+        );
 
-      title.className = 'title';
-      title.textContent = convo.title || 'New chat';
+      title.className =
+        'title';
 
-      const delBtn = document.createElement('button');
+      title.textContent =
+        convo.title ||
+        'New chat';
 
-      delBtn.className = 'delete-btn';
+      const delBtn =
+        document.createElement(
+          'button'
+        );
+
+      delBtn.className =
+        'delete-btn';
+
       delBtn.setAttribute(
         'aria-label',
         'Delete chat'
@@ -273,46 +668,82 @@
         '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>' +
         '</svg>';
 
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        requestDeleteConversation(convo.id);
-      });
+      delBtn.addEventListener(
+        'click',
+        (e) => {
+          e.stopPropagation();
 
-      item.appendChild(title);
-      item.appendChild(delBtn);
+          requestDeleteConversation(
+            convo.id
+          );
+        }
+      );
 
-      item.addEventListener('click', () => {
-        setActiveConversation(convo.id);
-        closeSidebarMobile();
-      });
+      item.appendChild(
+        title
+      );
 
-      chatListEl.appendChild(item);
+      item.appendChild(
+        delBtn
+      );
+
+      item.addEventListener(
+        'click',
+        () => {
+          setActiveConversation(
+            convo.id
+          );
+
+          closeSidebarMobile();
+        }
+      );
+
+      chatListEl.appendChild(
+        item
+      );
     }
   }
 
   function openSidebarMobile() {
-    sidebar.classList.add('open');
-    scrim.classList.add('open');
+    sidebar.classList.add(
+      'open'
+    );
+
+    scrim.classList.add(
+      'open'
+    );
   }
 
   function closeSidebarMobile() {
-    sidebar.classList.remove('open');
-    scrim.classList.remove('open');
+    sidebar.classList.remove(
+      'open'
+    );
+
+    scrim.classList.remove(
+      'open'
+    );
   }
 
   // ---------- Conversation lifecycle ----------
+
   function createConversation() {
     const convo = {
       id: genId(),
       title: '',
       messages: [],
       createdAt: Date.now(),
+      updatedAt: Date.now(),
     };
 
-    conversations.push(convo);
-    activeId = convo.id;
+    conversations.push(
+      convo
+    );
+
+    activeId =
+      convo.id;
 
     saveConversations();
+
     renderChatList();
     renderActiveConversation();
   }
@@ -324,56 +755,82 @@
     renderActiveConversation();
   }
 
-  function requestDeleteConversation(id) {
+  function requestDeleteConversation(
+    id
+  ) {
     pendingDeleteId = id;
 
-    const convo = conversations.find(
-      (c) => c.id === id
-    );
+    const convo =
+      conversations.find(
+        (c) =>
+          c.id === id
+      );
 
     modalMessage.textContent =
       convo && convo.title
         ? `This will permanently delete "${convo.title}".`
         : 'This will permanently delete this conversation.';
 
-    modalOverlay.classList.add('open');
+    modalOverlay.classList.add(
+      'open'
+    );
   }
 
-  function confirmDeleteConversation() {
-    if (!pendingDeleteId) return;
+  async function confirmDeleteConversation() {
+    if (!pendingDeleteId) {
+      return;
+    }
 
-    const id = pendingDeleteId;
+    const id =
+      pendingDeleteId;
 
-    conversations = conversations.filter(
-      (c) => c.id !== id
-    );
+    conversations =
+      conversations.filter(
+        (c) =>
+          c.id !== id
+      );
 
-    if (activeId === id) {
+    if (
+      activeId === id
+    ) {
       activeId = null;
     }
 
     saveConversations();
+
+    await deleteConversationFromCloud(
+      id
+    );
+
     renderChatList();
     renderActiveConversation();
+
     closeModal();
   }
 
   function closeModal() {
     pendingDeleteId = null;
-    modalOverlay.classList.remove('open');
+
+    modalOverlay.classList.remove(
+      'open'
+    );
   }
 
   // ---------- Rendering active conversation ----------
+
   function renderActiveConversation() {
-    const convo = getActiveConversation();
+    const convo =
+      getActiveConversation();
 
     if (!convo) {
+      chatTitleEl.textContent =
+        'New chat';
 
-      chatTitleEl.textContent = 'New chat';
+      welcomeScreen.style.display =
+        'flex';
 
-      welcomeScreen.style.display = 'flex';
-
-      messagesEl.style.display = 'none';
+      messagesEl.style.display =
+        'none';
 
       messagesEl.innerHTML = '';
 
@@ -381,22 +838,27 @@
     }
 
     chatTitleEl.textContent =
-      convo.title || 'New chat';
+      convo.title ||
+      'New chat';
 
-    welcomeScreen.style.display = 'none';
+    welcomeScreen.style.display =
+      'none';
 
-    messagesEl.style.display = 'flex';
+    messagesEl.style.display =
+      'flex';
 
     messagesEl.innerHTML = '';
 
-    for (const msg of convo.messages) {
-
+    for (
+      const msg of convo.messages
+    ) {
       appendMessageBubble(
         msg.role,
         msg.content,
         {
           scroll: false,
-          isError: msg.isError
+          isError:
+            msg.isError,
         }
       );
     }
@@ -411,17 +873,21 @@
   ) {
     const {
       scroll = true,
-      isError = false
+      isError = false,
     } = opts;
 
     const wrap =
-      document.createElement('div');
+      document.createElement(
+        'div'
+      );
 
     wrap.className =
       `message ${role}`;
 
     const avatar =
-      document.createElement('div');
+      document.createElement(
+        'div'
+      );
 
     avatar.className =
       `avatar ${
@@ -431,22 +897,39 @@
       }`;
 
     avatar.textContent =
-      role === 'user' ? 'U' : 'S';
+      role === 'user'
+        ? 'U'
+        : 'S';
 
     const bubble =
-      document.createElement('div');
+      document.createElement(
+        'div'
+      );
 
     bubble.className =
       'bubble' +
-      (isError ? ' error-bubble' : '');
+      (
+        isError
+          ? ' error-bubble'
+          : ''
+      );
 
     bubble.innerHTML =
-      renderMarkdown(content);
+      renderMarkdown(
+        content
+      );
 
-    wrap.appendChild(avatar);
-    wrap.appendChild(bubble);
+    wrap.appendChild(
+      avatar
+    );
 
-    messagesEl.appendChild(wrap);
+    wrap.appendChild(
+      bubble
+    );
+
+    messagesEl.appendChild(
+      wrap
+    );
 
     if (scroll) {
       scrollToBottom();
@@ -457,7 +940,9 @@
 
   function appendTypingIndicator() {
     const wrap =
-      document.createElement('div');
+      document.createElement(
+        'div'
+      );
 
     wrap.className =
       'message assistant';
@@ -466,7 +951,9 @@
       'typingIndicator';
 
     const avatar =
-      document.createElement('div');
+      document.createElement(
+        'div'
+      );
 
     avatar.className =
       'avatar assistant-avatar';
@@ -474,9 +961,12 @@
     avatar.textContent = 'S';
 
     const bubble =
-      document.createElement('div');
+      document.createElement(
+        'div'
+      );
 
-    bubble.className = 'bubble';
+    bubble.className =
+      'bubble';
 
     bubble.innerHTML =
       '<div class="typing-indicator">' +
@@ -485,10 +975,17 @@
       '<span></span>' +
       '</div>';
 
-    wrap.appendChild(avatar);
-    wrap.appendChild(bubble);
+    wrap.appendChild(
+      avatar
+    );
 
-    messagesEl.appendChild(wrap);
+    wrap.appendChild(
+      bubble
+    );
+
+    messagesEl.appendChild(
+      wrap
+    );
 
     scrollToBottom();
   }
@@ -510,10 +1007,15 @@
   }
 
   // ---------- Sending messages ----------
-  async function sendMessage(text) {
-    const trimmed = text.trim();
 
-    if (!trimmed || isSending) {
+  async function sendMessage(text) {
+    const trimmed =
+      text.trim();
+
+    if (
+      !trimmed ||
+      isSending
+    ) {
       return;
     }
 
@@ -521,22 +1023,27 @@
       getActiveConversation();
 
     if (!convo) {
-
       convo = {
         id: genId(),
         title: '',
         messages: [],
         createdAt: Date.now(),
+        updatedAt: Date.now(),
       };
 
-      conversations.push(convo);
-      activeId = convo.id;
+      conversations.push(
+        convo
+      );
+
+      activeId =
+        convo.id;
     }
 
     if (!convo.title) {
-
       convo.title =
-        titleFromMessage(trimmed);
+        titleFromMessage(
+          trimmed
+        );
 
       chatTitleEl.textContent =
         convo.title;
@@ -544,8 +1051,11 @@
 
     convo.messages.push({
       role: 'user',
-      content: trimmed
+      content: trimmed,
     });
+
+    convo.updatedAt =
+      Date.now();
 
     welcomeScreen.style.display =
       'none';
@@ -559,6 +1069,7 @@
     );
 
     saveConversations();
+
     renderChatList();
 
     composerInput.value = '';
@@ -570,30 +1081,47 @@
     appendTypingIndicator();
 
     try {
-
       const apiMessages =
-        convo.messages.map((m) => ({
-          role: m.role,
-          content: m.content
-        }));
+        convo.messages.map(
+          (m) => ({
+            role: m.role,
+            content:
+              m.content,
+          })
+        );
+
+      const token =
+        await getAuthToken();
+
+      const headers = {
+        'Content-Type':
+          'application/json',
+      };
+
+      if (token) {
+        headers.Authorization =
+          `Bearer ${token}`;
+      }
 
       const res =
-        await fetch(API_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type':
-              'application/json'
-          },
-          body: JSON.stringify({
-            messages: apiMessages
-          }),
-        });
+        await fetch(
+          API_ENDPOINT,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              messages:
+                apiMessages,
+            }),
+          }
+        );
 
       let data;
 
       try {
-        data = await res.json();
-      } catch (e) {
+        data =
+          await res.json();
+      } catch {
         data = null;
       }
 
@@ -604,32 +1132,35 @@
         !data ||
         data.error
       ) {
-
         const errorText =
-          (data && data.error) ||
+          (
+            data &&
+            data.error
+          ) ||
           'Something went wrong. Please try again.';
 
         convo.messages.push({
           role: 'assistant',
-          content: errorText,
-          isError: true
+          content:
+            errorText,
+          isError: true,
         });
 
         appendMessageBubble(
           'assistant',
           errorText,
-          { isError: true }
+          {
+            isError: true,
+          }
         );
-
       } else {
-
         const reply =
           data.reply ||
           '(no response)';
 
         convo.messages.push({
           role: 'assistant',
-          content: reply
+          content: reply,
         });
 
         appendMessageBubble(
@@ -637,39 +1168,60 @@
           reply
         );
       }
-
     } catch (err) {
-
       removeTypingIndicator();
+
+      console.error(
+        'Chat request failed:',
+        err
+      );
 
       const errorText =
         'Could not reach the server. Check your connection and try again.';
 
       convo.messages.push({
         role: 'assistant',
-        content: errorText,
-        isError: true
+        content:
+          errorText,
+        isError: true,
       });
 
       appendMessageBubble(
         'assistant',
         errorText,
-        { isError: true }
+        {
+          isError: true,
+        }
       );
-
     } finally {
+      convo.updatedAt =
+        Date.now();
 
       saveConversations();
+
       renderChatList();
+
       setSending(false);
+
+      // Save the complete conversation
+      // to Supabase if logged in.
+      if (currentUser) {
+        await saveConversationToCloud(
+          convo
+        );
+      }
     }
   }
 
   function setSending(sending) {
-    isSending = sending;
+    isSending =
+      sending;
 
-    sendBtn.disabled = sending;
-    composerInput.disabled = sending;
+    sendBtn.disabled =
+      sending;
+
+    composerInput.disabled =
+      sending;
 
     if (!sending) {
       composerInput.focus();
@@ -677,6 +1229,7 @@
   }
 
   // ---------- Composer ----------
+
   function autoResizeTextarea() {
     composerInput.style.height =
       'auto';
@@ -692,10 +1245,10 @@
   }
 
   // ---------- Event listeners ----------
+
   newChatBtn.addEventListener(
     'click',
     () => {
-
       activeId = null;
 
       renderChatList();
@@ -734,12 +1287,10 @@
   composerInput.addEventListener(
     'keydown',
     (e) => {
-
       if (
         e.key === 'Enter' &&
         !e.shiftKey
       ) {
-
         e.preventDefault();
 
         sendMessage(
@@ -755,22 +1306,26 @@
   );
 
   document
-    .querySelectorAll('.suggestion-card')
-    .forEach((card) => {
+    .querySelectorAll(
+      '.suggestion-card'
+    )
+    .forEach(
+      (card) => {
+        card.addEventListener(
+          'click',
+          () => {
+            const prompt =
+              card.dataset.prompt;
 
-      card.addEventListener(
-        'click',
-        () => {
-
-          const prompt =
-            card.dataset.prompt;
-
-          if (prompt) {
-            sendMessage(prompt);
+            if (prompt) {
+              sendMessage(
+                prompt
+              );
+            }
           }
-        }
-      );
-    });
+        );
+      }
+    );
 
   modalCancelBtn.addEventListener(
     'click',
@@ -785,9 +1340,9 @@
   modalOverlay.addEventListener(
     'click',
     (e) => {
-
       if (
-        e.target === modalOverlay
+        e.target ===
+        modalOverlay
       ) {
         closeModal();
       }
@@ -797,10 +1352,11 @@
   document.addEventListener(
     'keydown',
     (e) => {
-
       if (
         e.key === 'Escape' &&
-        modalOverlay.classList.contains('open')
+        modalOverlay.classList.contains(
+          'open'
+        )
       ) {
         closeModal();
       }
@@ -808,8 +1364,8 @@
   );
 
   // ---------- Init ----------
-  function init() {
 
+  async function init() {
     initializeAuthentication();
 
     loadConversations();
@@ -822,5 +1378,4 @@
   }
 
   init();
-
 })();
